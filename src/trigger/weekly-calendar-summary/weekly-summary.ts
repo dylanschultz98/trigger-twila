@@ -99,12 +99,17 @@ function localHour(dateTimeStr: string): number {
   return match ? parseInt(match[1], 10) : 0;
 }
 
+const MEETING_KEYWORDS = ["meeting", "meetings", "bonding"];
+
 // Keep only timed events that start between 08:00 and 15:59 local time
-function filterBusinessHours(events: CalendarEvent[]): CalendarEvent[] {
+// and whose title contains a meeting keyword
+function filterMeetings(events: CalendarEvent[]): CalendarEvent[] {
   return events.filter((e) => {
     if (!e.start.dateTime) return false; // exclude all-day events
     const hour = localHour(e.start.dateTime);
-    return hour >= 8 && hour < 16;
+    if (hour < 8 || hour >= 16) return false;
+    const title = (e.summary ?? "").toLowerCase();
+    return MEETING_KEYWORDS.some((kw) => title.includes(kw));
   });
 }
 
@@ -236,7 +241,7 @@ export const weeklyCalendarSummary = schedules.task({
       refreshToken,
     );
     const allEvents = await fetchCalendarEvents(accessToken, weekStart, weekEnd);
-    const events = filterBusinessHours(allEvents);
+    const events = filterMeetings(allEvents);
 
     console.log(`Found ${allEvents.length} total events, ${events.length} between 08:00–16:00`);
 
