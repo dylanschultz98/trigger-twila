@@ -11,12 +11,6 @@ interface CalendarEvent {
   end: { dateTime?: string; date?: string };
 }
 
-interface EventGroup {
-  title: string;
-  count: number;
-  totalMinutes: number;
-  allDayDays: number;
-}
 
 // ---------------------------------------------------------------------------
 // Env helpers
@@ -98,22 +92,24 @@ function getTimedMinutes(event: CalendarEvent): number {
   return Math.max(0, (end.getTime() - start.getTime()) / 60_000);
 }
 
-function getAllDayDays(event: CalendarEvent): number {
-  if (!event.start.date || !event.end.date) return 0;
-  const start = new Date(event.start.date);
-  const end = new Date(event.end.date);
-  return Math.max(
-    1,
-    Math.round((end.getTime() - start.getTime()) / 86_400_000),
-  );
+// Returns the local hour (0–23) from a dateTime string like "2026-03-09T10:00:00+02:00"
+function localHour(dateTimeStr: string): number {
+  // Strip the offset and parse the time component directly to avoid UTC conversion
+  const match = dateTimeStr.match(/T(\d{2}):/);
+  return match ? parseInt(match[1], 10) : 0;
 }
 
-function formatDuration(group: EventGroup): string {
-  if (group.allDayDays > 0 && group.totalMinutes === 0) {
-    return `${group.allDayDays} all-day day(s)`;
-  }
-  const hours = group.totalMinutes / 60;
-  return `${hours.toFixed(1)} hrs`;
+// Keep only timed events that start between 08:00 and 15:59 local time
+function filterBusinessHours(events: CalendarEvent[]): CalendarEvent[] {
+  return events.filter((e) => {
+    if (!e.start.dateTime) return false; // exclude all-day events
+    const hour = localHour(e.start.dateTime);
+    return hour >= 8 && hour < 16;
+  });
+}
+
+function formatMinutes(totalMinutes: number): string {
+  return `${(totalMinutes / 60).toFixed(1)} hrs`;
 }
 
 // ---------------------------------------------------------------------------
@@ -125,51 +121,21 @@ function buildMarkdown(
   weekStart: Date,
   weekEnd: Date,
 ): string {
-  const groupMap = new Map<string, EventGroup>();
-
-  for (const event of events) {
-    const title = event.summary?.trim() || "(No title)";
-    const isAllDay = !event.start.dateTime;
-    const existing = groupMap.get(title) ?? {
-      title,
-      count: 0,
-      totalMinutes: 0,
-      allDayDays: 0,
-    };
-
-    groupMap.set(title, {
-      ...existing,
-      count: existing.count + 1,
-      totalMinutes:
-        existing.totalMinutes + (isAllDay ? 0 : getTimedMinutes(event)),
-      allDayDays: existing.allDayDays + (isAllDay ? getAllDayDays(event) : 0),
-    });
-  }
-
-  // Sort by total minutes descending (most time-consuming first)
-  const groups = [...groupMap.values()].sort(
-    (a, b) => b.totalMinutes - a.totalMinutes,
-  );
-
   const fmt = (d: Date) =>
     `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 
-  const totalHours = (
-    groups.reduce((sum, g) => sum + g.totalMinutes, 0) / 60
-  ).toFixed(1);
+  const totalMinutes = events.reduce((sum, e) => sum + getTimedMinutes(e), 0);
+  const totalHours = formatMinutes(totalMinutes);
 
   let md = `# Weekly Calendar Summary\n\n`;
   md += `**Week:** ${fmt(weekStart)} → ${fmt(weekEnd)}\n`;
-  md += `**Total events:** ${events.length}\n`;
-  md += `**Total scheduled time:** ${totalHours} hrs\n\n`;
+  md += `**Total meetings:** ${events.length}\n`;
+  md += `**Total scheduled time:** ${totalHours}\n\n`;
   md += `---\n\n`;
   md += `## Event Breakdown\n\n`;
   md += `| Event | Occurrences | Time Spent |\n`;
   md += `|-------|:-----------:|:----------:|\n`;
-
-  for (const group of groups) {
-    md += `| ${group.title} | ${group.count} | ${formatDuration(group)} |\n`;
-  }
+  md += `| Meetings | ${events.length} | ${totalHours} |\n`;
 
   return md;
 }
@@ -269,9 +235,10 @@ export const weeklyCalendarSummary = schedules.task({
       clientSecret,
       refreshToken,
     );
-    const events = await fetchCalendarEvents(accessToken, weekStart, weekEnd);
+    const allEvents = await fetchCalendarEvents(accessToken, weekStart, weekEnd);
+    const events = filterBusinessHours(allEvents);
 
-    console.log(`Found ${events.length} calendar events`);
+    console.log(`Found ${allEvents.length} total events, ${events.length} between 08:00–16:00`);
 
     // Filename: YYYY-MM-D_TWILA.md (D = day with no leading zero)
     const year = now.getFullYear();
@@ -288,7 +255,7 @@ export const weeklyCalendarSummary = schedules.task({
       `Your weekly calendar summary is attached.`,
       ``,
       `Week: ${weekStart.toDateString()} → ${weekEnd.toDateString()}`,
-      `Events: ${events.length}`,
+      `Meetings (08:00–16:00): ${events.length}`,
       ``,
       `— TWILA`,
     ].join("\n");
